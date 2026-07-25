@@ -2,7 +2,7 @@
 
 A full-stack Java (Spring Boot) app that connects to the **Shoonya by Finvasia**
 market-data API and shows, in real time, the biggest **gainers and losers** over
-several short time windows (**30s, 1m, 2m, 5m, 10m**), with **Nifty 50** and
+several short time windows (**15s, 30s, 1m, 2m, 5m, 10m**), with **Nifty 50** and
 **Sensex** pinned at the top.
 
 > Info / monitoring only. It **never** places, modifies or cancels orders.
@@ -88,7 +88,7 @@ gainers/losers tables updating live. Longer windows (5m, 10m) show a
 | `shoonya.top-n` | `10` | Rows per gainers/losers table. |
 | `shoonya.broadcast-interval-ms` | `5000` | Push cadence to the browser. |
 | `shoonya.retention-ms` | `720000` | Tick history kept in memory (must exceed largest window). |
-| `shoonya.windows-seconds` | `30,60,120,300,600` | Movement windows. |
+| `shoonya.windows-seconds` | `15,30,60,120,300,600` | Movement windows. |
 
 Instrument format is `EXCHANGE|TOKEN|DISPLAY NAME` (comma separated).
 

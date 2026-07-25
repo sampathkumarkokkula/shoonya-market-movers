@@ -34,7 +34,7 @@ public class ShoonyaProperties {
     private long broadcastIntervalMs = 5000;
     private long retentionMs = 720_000;
     /** Movement windows, in seconds. */
-    private List<Integer> windowsSeconds = new ArrayList<>(List.of(30, 60, 120, 300, 600));
+    private List<Integer> windowsSeconds = new ArrayList<>(List.of(15, 30, 60, 120, 300, 600));
 
     // --- getters / setters ------------------------------------------------
 
