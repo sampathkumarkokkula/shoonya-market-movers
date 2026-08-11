@@ -36,6 +36,19 @@ public class ShoonyaProperties {
      */
     private String accountId = "";
 
+    // --- OAuth auth-code exchange (used when access-token is not supplied) ---
+    /** OAuth app client id (the API key of your OAuth app). */
+    private String clientId = "";
+    /** OAuth app secret code. Required to compute the GenAcsTok checksum. */
+    private String secretCode = "";
+    /**
+     * The one-time auth code from the OAuth redirect URL (the {@code code=}
+     * value). When set (and no access-token is given) the app exchanges it for
+     * an access token at GenAcsTok. May be pasted as the raw code or the whole
+     * redirect URL - it is sanitised before use.
+     */
+    private String authCode = "";
+
     // --- legacy QuickAuth fields (only used by the deprecated login path) ---
     private String password = "";
     private String vendorCode = "";
@@ -104,6 +117,30 @@ public class ShoonyaProperties {
 
     public void setAccountId(String accountId) {
         this.accountId = accountId;
+    }
+
+    public String getClientId() {
+        return clientId;
+    }
+
+    public void setClientId(String clientId) {
+        this.clientId = clientId;
+    }
+
+    public String getSecretCode() {
+        return secretCode;
+    }
+
+    public void setSecretCode(String secretCode) {
+        this.secretCode = secretCode;
+    }
+
+    public String getAuthCode() {
+        return authCode;
+    }
+
+    public void setAuthCode(String authCode) {
+        this.authCode = authCode;
     }
 
     public String getPassword() {

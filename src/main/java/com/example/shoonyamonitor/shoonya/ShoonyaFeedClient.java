@@ -117,7 +117,7 @@ public class ShoonyaFeedClient extends TextWebSocketHandler {
         Map<String, String> connect = new LinkedHashMap<>();
         connect.put("t", "a");
         connect.put("uid", props.getUserId());
-        connect.put("actid", props.getAccountId());
+        connect.put("actid", authService.resolvedAccountId());
         connect.put("accesstoken", susertoken);
         connect.put("source", "API");
         send(mapper.writeValueAsString(connect));

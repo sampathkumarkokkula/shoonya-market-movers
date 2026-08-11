@@ -40,6 +40,9 @@ public class ShoonyaAuthService {
             .connectTimeout(Duration.ofSeconds(15))
             .build();
 
+    /** Account id resolved during login; used for the WebSocket connect frame. */
+    private volatile String sessionActid;
+
     public ShoonyaAuthService(ShoonyaProperties props) {
         this.props = props;
     }
@@ -47,25 +50,139 @@ public class ShoonyaAuthService {
     /**
      * Resolves the session token used to open the feed.
      *
-     * <p>If an OAuth access token is configured it is returned directly.
-     * Otherwise this falls back to the deprecated QuickAuth login.</p>
+     * <p>Order of preference: a ready access token, then an auth-code exchange,
+     * then the deprecated QuickAuth login.</p>
      *
      * @throws IllegalStateException if no token is available or login fails
      */
     public String login() {
         require(props.getUserId(), "shoonya.user-id");
+        sessionActid = props.getAccountId();
 
         String accessToken = props.getAccessToken();
         if (accessToken != null && !accessToken.isBlank()) {
-            log.info("Using OAuth access token for uid {} (account {})",
-                    props.getUserId(), props.getAccountId());
+            log.info("Using pre-obtained OAuth access token for uid {} (account {})",
+                    props.getUserId(), sessionActid);
             return accessToken.trim();
         }
 
-        log.warn("No shoonya.access-token set - falling back to the DEPRECATED "
-                + "QuickAuth login. Its endpoint is retired and will likely fail "
-                + "with HTTP 502. Set SHOONYA_ACCESS_TOKEN to use the OAuth feed.");
+        if (props.getAuthCode() != null && !props.getAuthCode().isBlank()) {
+            return exchangeAuthCode();
+        }
+
+        log.warn("No shoonya.access-token or shoonya.auth-code set - falling back to "
+                + "the DEPRECATED QuickAuth login. Its endpoint is retired and will "
+                + "likely fail with HTTP 502.");
         return quickAuthLogin();
+    }
+
+    /**
+     * Account id resolved during the last {@link #login()} (from the token
+     * exchange when available, otherwise the configured account/user id).
+     */
+    public String resolvedAccountId() {
+        return (sessionActid == null || sessionActid.isBlank())
+                ? props.getAccountId() : sessionActid;
+    }
+
+    /**
+     * Exchanges the one-time OAuth auth code for an access token via the
+     * {@code GenAcsTok} endpoint. The request checksum is
+     * {@code sha256(clientId + secretCode + authCode)}.
+     *
+     * @return the OAuth access token used to open the feed
+     * @throws IllegalStateException if required inputs are missing or the
+     *                               exchange is rejected
+     */
+    private String exchangeAuthCode() {
+        require(props.getClientId(), "shoonya.client-id");
+        require(props.getSecretCode(), "shoonya.secret-code");
+
+        String authCode = cleanAuthCode(props.getAuthCode());
+        if (authCode.isBlank()) {
+            throw new IllegalStateException("shoonya.auth-code is empty after sanitising");
+        }
+
+        String checksum = CryptoUtil.sha256Hex(props.getClientId() + props.getSecretCode() + authCode);
+
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("code", authCode);
+        values.put("checksum", checksum);
+        values.put("uid", props.getUserId());
+
+        String jData;
+        try {
+            jData = mapper.writeValueAsString(values);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to serialize token-exchange payload", e);
+        }
+
+        String body = "jData=" + jData;
+        String url = normalize(props.getRestBase()) + "GenAcsTok";
+
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(20))
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            JsonNode root = mapper.readTree(response.body());
+
+            String token = root.path("access_token").asText("");
+            if (token.isBlank()) {
+                String emsg = root.path("emsg").asText(response.body());
+                throw new IllegalStateException(
+                        "Auth code exchange failed (no access_token returned): " + emsg
+                                + ". The auth code is single-use and short-lived - generate a "
+                                + "fresh one, and verify shoonya.client-id / shoonya.secret-code.");
+            }
+
+            String actid = root.path("actid").asText("");
+            if (!actid.isBlank()) {
+                sessionActid = actid;
+            }
+            log.info("Access token obtained via GenAcsTok for uid {} (account {})",
+                    props.getUserId(), resolvedAccountId());
+            return token;
+        } catch (IllegalStateException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Token-exchange request failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Extracts the bare auth code from whatever the user pasted: the raw code,
+     * a {@code code=...} fragment, or the whole redirect URL. Trailing URL
+     * pieces such as {@code &state=...}, a {@code #} fragment, or trailing
+     * slashes are removed.
+     */
+    static String cleanAuthCode(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String s = raw.trim();
+        int ci = s.indexOf("code=");
+        if (ci >= 0) {
+            s = s.substring(ci + "code=".length());
+        }
+        // Cut at the first URL delimiter that ends the code value.
+        int cut = s.length();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '&' || c == '#' || c == '?' || c == ' ') {
+                cut = i;
+                break;
+            }
+        }
+        s = s.substring(0, cut);
+        while (s.endsWith("/")) {
+            s = s.substring(0, s.length() - 1);
+        }
+        return s;
     }
 
     /**
