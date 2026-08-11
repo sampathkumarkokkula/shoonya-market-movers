@@ -14,10 +14,29 @@ public class ShoonyaProperties {
     /** When true the app produces synthetic ticks and needs no credentials. */
     private boolean mock = true;
 
-    private String restBase = "https://api.shoonya.com/NorenWClientTP/";
-    private String wsUrl = "wss://api.shoonya.com/NorenWSTP/";
+    // NOTE: Shoonya migrated to the OAuth API. The old NorenWClientTP /
+    // NorenWSTP endpoints are retired (they now return HTTP 502). The live
+    // endpoints are NorenWClientAPI (REST) and NorenWSAPI (WebSocket).
+    private String restBase = "https://api.shoonya.com/NorenWClientAPI/";
+    private String wsUrl = "wss://api.shoonya.com/NorenWSAPI/";
 
     private String userId = "";
+
+    /**
+     * OAuth session token. This is the {@code access_token} produced by the
+     * Shoonya OAuth flow (browser login -> auth code -> GenAcsTok exchange).
+     * When set, it is used directly as the WebSocket session token, replacing
+     * the retired QuickAuth login.
+     */
+    private String accessToken = "";
+
+    /**
+     * Trading account id returned alongside the access token. Defaults to the
+     * user id when left blank (they are the same for most retail accounts).
+     */
+    private String accountId = "";
+
+    // --- legacy QuickAuth fields (only used by the deprecated login path) ---
     private String password = "";
     private String vendorCode = "";
     private String apiKey = "";
@@ -68,6 +87,23 @@ public class ShoonyaProperties {
 
     public void setUserId(String userId) {
         this.userId = userId;
+    }
+
+    public String getAccessToken() {
+        return accessToken;
+    }
+
+    public void setAccessToken(String accessToken) {
+        this.accessToken = accessToken;
+    }
+
+    /** Account id, falling back to the user id when not explicitly set. */
+    public String getAccountId() {
+        return (accountId == null || accountId.isBlank()) ? userId : accountId;
+    }
+
+    public void setAccountId(String accountId) {
+        this.accountId = accountId;
     }
 
     public String getPassword() {

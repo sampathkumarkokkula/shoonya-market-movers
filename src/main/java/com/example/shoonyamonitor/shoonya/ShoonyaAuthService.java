@@ -18,8 +18,16 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Performs the Shoonya (Noren) QuickAuth login and returns the session token
- * ({@code susertoken}) needed to open the market-data WebSocket.
+ * Resolves the session token needed to open the market-data WebSocket.
+ *
+ * <p>Shoonya migrated to an OAuth flow. The supported path is to supply an
+ * OAuth {@code access_token} (obtained once per session via Shoonya's browser
+ * login + {@code GenAcsTok} exchange) through {@code shoonya.access-token};
+ * that token is used directly as the WebSocket session token.</p>
+ *
+ * <p>The former {@code QuickAuth} login is kept only as a deprecated fallback.
+ * Its endpoint ({@code NorenWClientTP}) is retired and now returns HTTP 502, so
+ * it will not establish a live feed.</p>
  */
 @Service
 public class ShoonyaAuthService {
@@ -37,12 +45,36 @@ public class ShoonyaAuthService {
     }
 
     /**
-     * Logs in and returns the session token.
+     * Resolves the session token used to open the feed.
      *
-     * @throws IllegalStateException if credentials are missing or login fails
+     * <p>If an OAuth access token is configured it is returned directly.
+     * Otherwise this falls back to the deprecated QuickAuth login.</p>
+     *
+     * @throws IllegalStateException if no token is available or login fails
      */
     public String login() {
         require(props.getUserId(), "shoonya.user-id");
+
+        String accessToken = props.getAccessToken();
+        if (accessToken != null && !accessToken.isBlank()) {
+            log.info("Using OAuth access token for uid {} (account {})",
+                    props.getUserId(), props.getAccountId());
+            return accessToken.trim();
+        }
+
+        log.warn("No shoonya.access-token set - falling back to the DEPRECATED "
+                + "QuickAuth login. Its endpoint is retired and will likely fail "
+                + "with HTTP 502. Set SHOONYA_ACCESS_TOKEN to use the OAuth feed.");
+        return quickAuthLogin();
+    }
+
+    /**
+     * Legacy QuickAuth login. Retained for reference only; the underlying
+     * endpoint is retired.
+     *
+     * @throws IllegalStateException if credentials are missing or login fails
+     */
+    private String quickAuthLogin() {
         require(props.getPassword(), "shoonya.password");
         require(props.getVendorCode(), "shoonya.vendor-code");
         require(props.getApiKey(), "shoonya.api-key");

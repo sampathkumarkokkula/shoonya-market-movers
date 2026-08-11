@@ -110,10 +110,12 @@ public class ShoonyaFeedClient extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         this.session = session;
+        // Connect frame for the Noren feed. For the OAuth API the access token
+        // occupies the same "susertoken" slot as the old QuickAuth token.
         Map<String, String> connect = new LinkedHashMap<>();
         connect.put("t", "c");
         connect.put("uid", props.getUserId());
-        connect.put("actid", props.getUserId());
+        connect.put("actid", props.getAccountId());
         connect.put("source", "API");
         connect.put("susertoken", susertoken);
         send(mapper.writeValueAsString(connect));
