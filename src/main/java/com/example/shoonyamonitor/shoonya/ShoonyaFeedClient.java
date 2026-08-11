@@ -110,14 +110,16 @@ public class ShoonyaFeedClient extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         this.session = session;
-        // Connect frame for the Noren feed. For the OAuth API the access token
-        // occupies the same "susertoken" slot as the old QuickAuth token.
+        // OAuth connect frame for the NorenWSAPI feed. Note the OAuth protocol
+        // differs from the old feed: the frame type is "a" (not "c") and the
+        // token is sent as "accesstoken" (not "susertoken"). The server
+        // acknowledges with {"t":"ak","s":"OK"}.
         Map<String, String> connect = new LinkedHashMap<>();
-        connect.put("t", "c");
+        connect.put("t", "a");
         connect.put("uid", props.getUserId());
         connect.put("actid", props.getAccountId());
+        connect.put("accesstoken", susertoken);
         connect.put("source", "API");
-        connect.put("susertoken", susertoken);
         send(mapper.writeValueAsString(connect));
         log.info("Connect frame sent, waiting for acknowledgement");
     }
@@ -127,7 +129,7 @@ public class ShoonyaFeedClient extends TextWebSocketHandler {
         JsonNode node = mapper.readTree(message.getPayload());
         String t = node.path("t").asText("");
         switch (t) {
-            case "ck" -> {
+            case "ak", "ck" -> {
                 if ("OK".equalsIgnoreCase(node.path("s").asText(""))) {
                     log.info("Feed connected. Subscribing to {} instruments.", registry.all().size());
                     status.setConnected(true);
@@ -139,7 +141,7 @@ public class ShoonyaFeedClient extends TextWebSocketHandler {
             }
             case "tk", "tf" -> ingest.applyTouchline(node);
             default -> {
-                // tk/tf/ck handled; ignore order feeds, dpr, etc. for this info-only app
+                // ak/ck/tk/tf handled; ignore order feeds, depth, etc. for this info-only app
             }
         }
     }
