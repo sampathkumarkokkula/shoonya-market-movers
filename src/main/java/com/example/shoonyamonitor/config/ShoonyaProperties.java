@@ -59,10 +59,31 @@ public class ShoonyaProperties {
 
     /** Raw "EXCH|TOKEN|NAME" entries for the indices shown at the top. */
     private List<String> indices = new ArrayList<>();
-    /** Raw "EXCH|TOKEN|NAME" entries scanned for gainers/losers. */
+    /** Raw "EXCH|TOKEN|NAME" entries scanned for gainers/losers (fallback,
+     *  used only when the symbol-master universe is disabled). */
     private List<String> watchlist = new ArrayList<>();
 
-    private int topN = 10;
+    // --- Full-universe (symbol master) settings -------------------------------
+    /** When true, the watchlist is built from the exchange symbol master
+     *  (all NSE EQ stocks) instead of the hardcoded {@link #watchlist}. */
+    private boolean universeEnabled = false;
+    /** URL of the NSE symbol master zip published by Shoonya. */
+    private String symbolMasterUrl = "https://api.shoonya.com/NSE_symbols.txt.zip";
+    /** Directory used to cache the downloaded symbol master for offline
+     *  fallback. Blank means the system temp directory. */
+    private String symbolMasterCache = "";
+    /** Max tokens subscribed on one feed connection (Noren limit ~1000). */
+    private int subscriptionLimit = 1000;
+    /** Max concurrent feed connections used to cover the universe. */
+    private int maxConnections = 5;
+    /** Liquidity filter: minimum traded volume for an instrument to be ranked
+     *  (0 disables the volume check). */
+    private long minVolume = 50_000;
+    /** Liquidity filter: minimum last price for an instrument to be ranked
+     *  (0 disables the price check). */
+    private double minPrice = 10.0;
+
+    private int topN = 20;
     private long broadcastIntervalMs = 5000;
     private long retentionMs = 720_000;
     /** Movement windows, in seconds. */
@@ -205,6 +226,62 @@ public class ShoonyaProperties {
 
     public void setWatchlist(List<String> watchlist) {
         this.watchlist = watchlist;
+    }
+
+    public boolean isUniverseEnabled() {
+        return universeEnabled;
+    }
+
+    public void setUniverseEnabled(boolean universeEnabled) {
+        this.universeEnabled = universeEnabled;
+    }
+
+    public String getSymbolMasterUrl() {
+        return symbolMasterUrl;
+    }
+
+    public void setSymbolMasterUrl(String symbolMasterUrl) {
+        this.symbolMasterUrl = symbolMasterUrl;
+    }
+
+    public String getSymbolMasterCache() {
+        return symbolMasterCache;
+    }
+
+    public void setSymbolMasterCache(String symbolMasterCache) {
+        this.symbolMasterCache = symbolMasterCache;
+    }
+
+    public int getSubscriptionLimit() {
+        return subscriptionLimit;
+    }
+
+    public void setSubscriptionLimit(int subscriptionLimit) {
+        this.subscriptionLimit = subscriptionLimit;
+    }
+
+    public int getMaxConnections() {
+        return maxConnections;
+    }
+
+    public void setMaxConnections(int maxConnections) {
+        this.maxConnections = maxConnections;
+    }
+
+    public long getMinVolume() {
+        return minVolume;
+    }
+
+    public void setMinVolume(long minVolume) {
+        this.minVolume = minVolume;
+    }
+
+    public double getMinPrice() {
+        return minPrice;
+    }
+
+    public void setMinPrice(double minPrice) {
+        this.minPrice = minPrice;
     }
 
     public int getTopN() {

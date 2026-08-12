@@ -3,7 +3,6 @@ package com.example.shoonyamonitor.shoonya;
 import com.example.shoonyamonitor.config.ShoonyaProperties;
 import com.example.shoonyamonitor.model.Instrument;
 import com.example.shoonyamonitor.store.InstrumentRegistry;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -12,32 +11,26 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Live market-data client for the Shoonya (Noren) WebSocket.
+ * Orchestrates the live Shoonya (Noren) OAuth market-data feed.
  *
- * <p>Only created when {@code shoonya.mock=false}. It logs in via
- * {@link ShoonyaAuthService}, opens the feed, subscribes to all configured
- * instruments and forwards every touchline update to {@link FeedIngest}.
- * A heartbeat is sent every 3 seconds and the connection reconnects
- * automatically after a drop.</p>
+ * <p>Only created when {@code shoonya.mock=false}. It authenticates once via
+ * {@link ShoonyaAuthService}, splits the full instrument universe into batches
+ * that respect the per-connection {@code subscription-limit}, and opens one
+ * {@link FeedConnection} per batch (up to {@code max-connections}). Each
+ * connection subscribes its batch, heartbeats, and reconnects independently.
+ * The overall feed is reported connected while at least one connection is up.</p>
  */
 @Component
 @ConditionalOnProperty(name = "shoonya.mock", havingValue = "false")
-public class ShoonyaFeedClient extends TextWebSocketHandler {
+public class ShoonyaFeedClient {
 
     private static final Logger log = LoggerFactory.getLogger(ShoonyaFeedClient.class);
 
@@ -47,19 +40,11 @@ public class ShoonyaFeedClient extends TextWebSocketHandler {
     private final FeedIngest ingest;
     private final FeedStatus status;
     private final ObjectMapper mapper = new ObjectMapper();
-
     private final StandardWebSocketClient client = new StandardWebSocketClient();
-    private final ScheduledExecutorService scheduler =
-            Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "shoonya-feed");
-                t.setDaemon(true);
-                return t;
-            });
 
-    private volatile WebSocketSession session;
-    private volatile String susertoken;
+    private final List<FeedConnection> connections = new CopyOnWriteArrayList<>();
+    private final AtomicInteger connectedCount = new AtomicInteger(0);
     private volatile boolean shuttingDown;
-    private ScheduledFuture<?> heartbeat;
 
     public ShoonyaFeedClient(ShoonyaProperties props,
                              ShoonyaAuthService authService,
@@ -76,134 +61,101 @@ public class ShoonyaFeedClient extends TextWebSocketHandler {
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         status.setMode("LIVE");
-        connect();
+        openConnections();
     }
 
-    private void connect() {
+    /** Authenticates and opens one connection per subscription batch. */
+    private synchronized void openConnections() {
         if (shuttingDown) {
             return;
         }
+        String token;
         try {
             log.info("Authenticating with Shoonya...");
-            this.susertoken = authService.login();
-            log.info("Opening market-data WebSocket at {}", props.getWsUrl());
-            client.execute(this, props.getWsUrl())
-                    .exceptionally(ex -> {
-                        log.error("WebSocket connect failed: {}", ex.getMessage());
-                        scheduleReconnect();
-                        return null;
-                    });
+            token = authService.login();
         } catch (Exception e) {
-            log.error("Startup failed ({}). Retrying in 10s.", e.getMessage());
-            scheduleReconnect();
+            log.error("Authentication failed ({}). The feed cannot start until a valid "
+                    + "access token or auth code is provided.", e.getMessage());
+            status.setConnected(false);
+            return;
+        }
+
+        String uid = props.getUserId();
+        String actid = authService.resolvedAccountId();
+
+        List<String> keys = registry.all().stream().map(Instrument::key).toList();
+        List<List<String>> batches = batch(keys);
+        log.info("Opening {} feed connection(s) for {} instruments (limit {}/connection).",
+                batches.size(), keys.size(), props.getSubscriptionLimit());
+
+        int id = 0;
+        for (List<String> b : batches) {
+            FeedConnection conn = new FeedConnection(id++, props.getWsUrl(), uid, actid, token,
+                    b, ingest, mapper, client, this::onConnectionState);
+            connections.add(conn);
+            conn.connect();
         }
     }
 
-    private void scheduleReconnect() {
+    /**
+     * Splits the keys into batches no larger than the subscription limit,
+     * capped at the configured maximum number of connections. Logs a shortfall
+     * if the universe exceeds total capacity.
+     */
+    private List<List<String>> batch(List<String> keys) {
+        int limit = Math.max(1, props.getSubscriptionLimit());
+        int maxConns = Math.max(1, props.getMaxConnections());
+        int capacity = limit * maxConns;
+
+        List<String> covered = keys;
+        if (keys.size() > capacity) {
+            log.warn("Universe of {} instruments exceeds capacity {} ({} connections x {} "
+                            + "tokens). {} instruments will NOT be subscribed.",
+                    keys.size(), capacity, maxConns, limit, keys.size() - capacity);
+            covered = keys.subList(0, capacity);
+        }
+
+        List<List<String>> batches = new ArrayList<>();
+        for (int i = 0; i < covered.size(); i += limit) {
+            batches.add(new ArrayList<>(covered.subList(i, Math.min(i + limit, covered.size()))));
+        }
+        return batches;
+    }
+
+    /** Callback from each connection when it connects or disconnects. */
+    private void onConnectionState(int connectionId, boolean connected) {
+        int now = connected ? connectedCount.incrementAndGet() : connectedCount.decrementAndGet();
+        int active = Math.max(0, now);
+        status.setConnected(active > 0);
+        log.info("Feed connection {} {} - {}/{} connections active.",
+                connectionId, connected ? "up" : "down", active, connections.size());
+    }
+
+    /**
+     * Rebuilds all connections from the current registry (used after a daily
+     * universe refresh). Closes existing connections and reopens fresh ones.
+     */
+    public synchronized void restart() {
         if (shuttingDown) {
             return;
         }
+        log.info("Restarting feed connections to apply the refreshed universe.");
+        closeAll();
+        openConnections();
+    }
+
+    private void closeAll() {
+        for (FeedConnection c : connections) {
+            c.shutdown();
+        }
+        connections.clear();
+        connectedCount.set(0);
         status.setConnected(false);
-        scheduler.schedule(this::connect, 10, TimeUnit.SECONDS);
-    }
-
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        this.session = session;
-        // OAuth connect frame for the NorenWSAPI feed. Note the OAuth protocol
-        // differs from the old feed: the frame type is "a" (not "c") and the
-        // token is sent as "accesstoken" (not "susertoken"). The server
-        // acknowledges with {"t":"ak","s":"OK"}.
-        Map<String, String> connect = new LinkedHashMap<>();
-        connect.put("t", "a");
-        connect.put("uid", props.getUserId());
-        connect.put("actid", authService.resolvedAccountId());
-        connect.put("accesstoken", susertoken);
-        connect.put("source", "API");
-        send(mapper.writeValueAsString(connect));
-        log.info("Connect frame sent, waiting for acknowledgement");
-    }
-
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-        JsonNode node = mapper.readTree(message.getPayload());
-        String t = node.path("t").asText("");
-        switch (t) {
-            case "ak", "ck" -> {
-                if ("OK".equalsIgnoreCase(node.path("s").asText(""))) {
-                    log.info("Feed connected. Subscribing to {} instruments.", registry.all().size());
-                    status.setConnected(true);
-                    subscribeAll();
-                    startHeartbeat();
-                } else {
-                    log.error("Connect acknowledgement not OK: {}", message.getPayload());
-                }
-            }
-            case "tk", "tf" -> ingest.applyTouchline(node);
-            default -> {
-                // ak/ck/tk/tf handled; ignore order feeds, depth, etc. for this info-only app
-            }
-        }
-    }
-
-    private void subscribeAll() throws Exception {
-        String keys = registry.all().stream()
-                .map(Instrument::key)
-                .collect(Collectors.joining("#"));
-        Map<String, String> sub = new LinkedHashMap<>();
-        sub.put("t", "t"); // touchline
-        sub.put("k", keys);
-        send(mapper.writeValueAsString(sub));
-    }
-
-    private void startHeartbeat() {
-        if (heartbeat != null) {
-            heartbeat.cancel(false);
-        }
-        heartbeat = scheduler.scheduleAtFixedRate(() -> {
-            try {
-                send("{\"t\":\"h\"}");
-            } catch (Exception e) {
-                log.debug("Heartbeat send failed: {}", e.getMessage());
-            }
-        }, 3, 3, TimeUnit.SECONDS);
-    }
-
-    private synchronized void send(String payload) throws Exception {
-        WebSocketSession s = this.session;
-        if (s != null && s.isOpen()) {
-            s.sendMessage(new TextMessage(payload));
-        }
-    }
-
-    @Override
-    public void handleTransportError(WebSocketSession session, Throwable exception) {
-        log.warn("Feed transport error: {}", exception.getMessage());
-    }
-
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) {
-        log.warn("Feed connection closed ({}). Reconnecting.", closeStatus);
-        status.setConnected(false);
-        if (heartbeat != null) {
-            heartbeat.cancel(false);
-        }
-        scheduleReconnect();
     }
 
     @PreDestroy
     public void shutdown() {
         shuttingDown = true;
-        if (heartbeat != null) {
-            heartbeat.cancel(false);
-        }
-        scheduler.shutdownNow();
-        try {
-            if (session != null && session.isOpen()) {
-                session.close();
-            }
-        } catch (Exception ignored) {
-            // best effort on shutdown
-        }
+        closeAll();
     }
 }

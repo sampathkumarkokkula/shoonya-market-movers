@@ -2,6 +2,7 @@ package com.example.shoonyamonitor.store;
 
 import com.example.shoonyamonitor.config.ShoonyaProperties;
 import com.example.shoonyamonitor.model.Instrument;
+import com.example.shoonyamonitor.shoonya.SymbolMasterService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,8 +14,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Parses the configured indices + watchlist once at startup and exposes
- * convenient lookups keyed by {@code EXCH|TOKEN}.
+ * Holds the set of monitored instruments keyed by {@code EXCHANGE|TOKEN}.
+ *
+ * <p>Indices always come from configuration. The watchlist is either the full
+ * NSE EQ universe (loaded from the symbol master when
+ * {@code shoonya.universe-enabled=true}) or the hardcoded configuration list.
+ * The registry can be {@link #reload() reloaded} at runtime (e.g. by the daily
+ * refresh); reads see a consistent snapshot via volatile references.</p>
  */
 @Component
 public class InstrumentRegistry {
@@ -22,35 +28,82 @@ public class InstrumentRegistry {
     private static final Logger log = LoggerFactory.getLogger(InstrumentRegistry.class);
 
     private final ShoonyaProperties props;
+    private final SymbolMasterService symbolMaster;
 
-    private final Map<String, Instrument> byKey = new LinkedHashMap<>();
-    private final List<Instrument> indices = new ArrayList<>();
-    private final List<Instrument> watchlist = new ArrayList<>();
+    private volatile Map<String, Instrument> byKey = new LinkedHashMap<>();
+    private volatile List<Instrument> indices = new ArrayList<>();
+    private volatile List<Instrument> watchlist = new ArrayList<>();
 
-    public InstrumentRegistry(ShoonyaProperties props) {
+    public InstrumentRegistry(ShoonyaProperties props, SymbolMasterService symbolMaster) {
         this.props = props;
+        this.symbolMaster = symbolMaster;
     }
 
     @PostConstruct
     void init() {
+        populate();
+    }
+
+    /**
+     * Rebuilds the instrument set from configuration and (when enabled) the
+     * symbol master, atomically swapping in the new snapshot.
+     *
+     * @return the total number of instruments after population
+     */
+    public synchronized int reload() {
+        populate();
+        return byKey.size();
+    }
+
+    private void populate() {
+        Map<String, Instrument> newByKey = new LinkedHashMap<>();
+        List<Instrument> newIndices = new ArrayList<>();
+        List<Instrument> newWatchlist = new ArrayList<>();
+
         for (String raw : props.getIndices()) {
             if (raw == null || raw.isBlank()) {
                 continue;
             }
             Instrument i = Instrument.parse(raw, true);
-            indices.add(i);
-            byKey.put(i.key(), i);
+            newIndices.add(i);
+            newByKey.put(i.key(), i);
         }
+
+        List<Instrument> universe = resolveWatchlist();
+        for (Instrument i : universe) {
+            if (newByKey.containsKey(i.key())) {
+                continue; // already present (e.g. also an index) - keep one
+            }
+            newWatchlist.add(i);
+            newByKey.put(i.key(), i);
+        }
+
+        this.indices = newIndices;
+        this.watchlist = newWatchlist;
+        this.byKey = newByKey;
+
+        log.info("Instrument registry ready: {} indices, {} watchlist scrips",
+                newIndices.size(), newWatchlist.size());
+    }
+
+    /** Resolves the watchlist from the symbol master universe or config. */
+    private List<Instrument> resolveWatchlist() {
+        if (props.isUniverseEnabled()) {
+            List<Instrument> universe = symbolMaster.loadUniverse();
+            if (!universe.isEmpty()) {
+                return universe;
+            }
+            log.warn("Universe enabled but symbol master returned no instruments; "
+                    + "falling back to the configured watchlist.");
+        }
+        List<Instrument> configured = new ArrayList<>();
         for (String raw : props.getWatchlist()) {
             if (raw == null || raw.isBlank()) {
                 continue;
             }
-            Instrument i = Instrument.parse(raw, false);
-            watchlist.add(i);
-            byKey.putIfAbsent(i.key(), i);
+            configured.add(Instrument.parse(raw, false));
         }
-        log.info("Instrument registry ready: {} indices, {} watchlist scrips",
-                indices.size(), watchlist.size());
+        return configured;
     }
 
     public List<Instrument> indices() {

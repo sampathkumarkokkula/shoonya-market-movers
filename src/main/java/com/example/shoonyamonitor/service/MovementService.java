@@ -71,6 +71,14 @@ public class MovementService {
             if (ltp <= 0) {
                 continue;
             }
+            // Liquidity filter: keep rankings meaningful by excluding thin/penny
+            // scrips. They remain tracked in the store, just not ranked.
+            if (props.getMinPrice() > 0 && ltp < props.getMinPrice()) {
+                continue;
+            }
+            if (props.getMinVolume() > 0 && s.getVolume() < props.getMinVolume()) {
+                continue;
+            }
             Double baseline = store.baselinePrice(i.key(), windowMs, now);
             if (baseline == null || baseline <= 0) {
                 continue;
